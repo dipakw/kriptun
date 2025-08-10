@@ -1,4 +1,6 @@
-<p style="color:red;font-size:20px;">Under developemnt now.</p>
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=22&pause=700&center=true&vCenter=true&width=435&lines=Under+development+now." alt="Under development" />
+</p>
 
 ----
 
