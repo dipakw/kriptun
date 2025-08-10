@@ -4,34 +4,47 @@ on:
   workflow_dispatch:
     inputs:
       keep_latest:
-        description: "How many recent releases to keep (older ones will be deleted)"
+        description: "How many recent releases to keep"
         required: false
-        default: "1"
+        default: "2"
 
 permissions:
   contents: write
 
 jobs:
   build-and-release:
+    name: Release
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # we need tags history for cleanup
 
+      - name: Generate tag name
+        id: gen_tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="dev-$(date -u +%y%m%d%H%M%S)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Generated tag: $TAG"
+
       - name: Build
+        shell: bash
         run: |
           set -euo pipefail
           chmod +x ./build-all || true
           ./build-all
         env:
-          VERSION_TAG: ${{ github.ref_name }}
+          VERSION_TAG: ${{ steps.gen_tag.outputs.tag }}
 
       - name: Ensure release artifacts exist
+        shell: bash
         run: |
           set -euo pipefail
           if [ ! -d "./release" ]; then
@@ -44,57 +57,68 @@ jobs:
             echo "No files found in ./release/"
             exit 1
           fi
+          echo "Found ${#files[@]} artifacts."
 
-      - name: Create tag (UTC dev-yymmddhhmmss)
+      - name: Create tag
         id: tag
+        shell: bash
         run: |
           set -euo pipefail
-          TAG="dev-$(date -u +%y%m%d%H%M%S)"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          TAG="${{ steps.gen_tag.outputs.tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$TAG"
           git push origin "$TAG"
           echo "Created and pushed tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
+      - name: Create release (published + latest)
+        shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
           gh release create "$TAG" \
             --title "$TAG" \
             --notes "Automated dev build for $TAG" \
-            --prerelease
-          echo "Release $TAG created."
+            --latest
+          echo "Release $TAG created, published, and marked as latest."
 
-      - name: Upload artifacts to release
+      - name: Upload artifacts
+        shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
           gh release upload "$TAG" ./release/* --clobber
           echo "Uploaded artifacts to $TAG."
 
-      - name: Cleanup old dev releases & tags
+      - name: Cleanup old releases & tags
         if: ${{ always() }}
+        shell: bash
         run: |
           set -euo pipefail
-          KEEP="${{ github.event.inputs.keep_latest }}"
-          : "${KEEP:=5}"   # default if input empty
 
+          # Parse input; default to workflow default (2) if empty or invalid
+          KEEP_INPUT="${{ github.event.inputs.keep_latest }}"
+          if [[ -z "${KEEP_INPUT:-}" || ! "$KEEP_INPUT" =~ ^[0-9]+$ ]]; then
+            KEEP=2
+          else
+            KEEP="$KEEP_INPUT"
+          fi
           echo "Keeping the most recent $KEEP dev releases; older ones will be deleted."
 
           # Ensure we have the latest tags locally
           git fetch --tags --prune --prune-tags
 
           # List all dev-* releases sorted by creation time (oldest first)
-          mapfile -t dev_releases < <(
+          mapfile -t releases < <(
             gh release list --limit 200 --json tagName,createdAt \
-              --jq 'map(select(.tagName|test("^dev-"))) | sort_by(.createdAt) | .[].tagName'
+              --jq 'map(select(.tagName|startswith("dev-"))) | sort_by(.createdAt) | .[].tagName'
           )
 
-          total=${#dev_releases[@]}
+          total=${#releases[@]}
           echo "Found $total dev releases."
 
+          # Normalize KEEP
           if [ "$KEEP" -lt 0 ]; then KEEP=0; fi
           to_delete=$(( total > KEEP ? total - KEEP : 0 ))
 
@@ -105,7 +129,7 @@ jobs:
 
           echo "Will delete $to_delete old dev releases/tags."
           for (( i=0; i<to_delete; i++ )); do
-            t="${dev_releases[$i]}"
+            t="${releases[$i]}"
             echo "Deleting release $t ..."
             gh release delete "$t" -y || echo "Release $t already removed or not found."
             echo "Deleting remote tag $t ..."
