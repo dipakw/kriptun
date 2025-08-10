@@ -1,0 +1,115 @@
+name: Release Nightly
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_latest:
+        description: "How many recent releases to keep (older ones will be deleted)"
+        required: false
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # we need tags history for cleanup
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          chmod +x ./build-all || true
+          ./build-all
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+
+      - name: Ensure release artifacts exist
+        run: |
+          set -euo pipefail
+          if [ ! -d "./release" ]; then
+            echo "release/ directory not found."
+            exit 1
+          fi
+          shopt -s nullglob
+          files=(./release/*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No files found in ./release/"
+            exit 1
+          fi
+
+      - name: Create tag (UTC dev-yymmddhhmmss)
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="dev-$(date -u +%y%m%d%H%M%S)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Created and pushed tag: $TAG"
+
+      - name: Create GitHub release
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Automated dev build for $TAG" \
+            --prerelease
+          echo "Release $TAG created."
+
+      - name: Upload artifacts to release
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release upload "$TAG" ./release/* --clobber
+          echo "Uploaded artifacts to $TAG."
+
+      - name: Cleanup old dev releases & tags
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          KEEP="${{ github.event.inputs.keep_latest }}"
+          : "${KEEP:=5}"   # default if input empty
+
+          echo "Keeping the most recent $KEEP dev releases; older ones will be deleted."
+
+          # Ensure we have the latest tags locally
+          git fetch --tags --prune --prune-tags
+
+          # List all dev-* releases sorted by creation time (oldest first)
+          mapfile -t dev_releases < <(
+            gh release list --limit 200 --json tagName,createdAt \
+              --jq 'map(select(.tagName|test("^dev-"))) | sort_by(.createdAt) | .[].tagName'
+          )
+
+          total=${#dev_releases[@]}
+          echo "Found $total dev releases."
+
+          if [ "$KEEP" -lt 0 ]; then KEEP=0; fi
+          to_delete=$(( total > KEEP ? total - KEEP : 0 ))
+
+          if [ "$to_delete" -le 0 ]; then
+            echo "Nothing to delete."
+            exit 0
+          fi
+
+          echo "Will delete $to_delete old dev releases/tags."
+          for (( i=0; i<to_delete; i++ )); do
+            t="${dev_releases[$i]}"
+            echo "Deleting release $t ..."
+            gh release delete "$t" -y || echo "Release $t already removed or not found."
+            echo "Deleting remote tag $t ..."
+            git push --delete origin "$t" || echo "Remote tag $t not found."
+          done
+
+          echo "Cleanup complete."
