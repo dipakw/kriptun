@@ -65,9 +65,9 @@ func (s *Server) tcp(userID string, target *shared.Target, conn net.Conn) {
 		RToD: target.RToB,
 		WToD: target.WToB,
 
-		Report: func(sr uint8, dw uint8, n int) {
-			s.conf.Log.Inff("Report: user: %s | sr: %d | dw: %d | n: %d", userID, sr, dw, n)
-		},
+		// Report: func(sr uint8, dw uint8, n int) {
+		// 	s.conf.Log.Inff("Report: user: %s | sr: %d | dw: %d | n: %d", userID, sr, dw, n)
+		// },
 	})
 
 	if err != nil && err != io.EOF {
