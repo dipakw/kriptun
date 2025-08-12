@@ -13,7 +13,7 @@ Kriptun is a secure proxy implemented in Go, uses MLKEM for post-quantum-resilie
 See [releases](https://github.com/dipakw/kriptun/releases), or:
 
 ```bash
-curl -sL https://dipakw.github.io/scripts/kriptun-dl | sh
+curl -sL https://dipakw.github.io/@/kriptun-dl | sh
 ```
 
 ## Spec
